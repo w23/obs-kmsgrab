@@ -1,61 +1,38 @@
-# OBS Plugin Template
+# linux-kmsgrab plugin for OBS
 
 ## Introduction
 
-This plugin is meant to make it easy to quickstart development of new OBS plugins. It includes:
+This plugin is a proof-of-concept libdrm-based screen capture for OBS. It uses DMA-BUF to import CRTC framebuffer directly into EGL texture in OBS as a source. This bypasses expensive double GPU->RAM RAM->GPU framebuffer copy that is invoked by anything X11-XSHM-based.
 
-- The CMake project file
-- Boilerplate plugin source code
-- A continuous-integration configuration for automated builds (a.k.a Build Bot)
+This plugins is almost completely agnostic of any windowing system you might have: it works reasonably well with both X11 and Wayland, and theoretically could work even with KMS terminals.
 
-## Configuring
+However, I'd recommend using something like https://hg.sr.ht/~scoopta/wlrobs instead -- it also uses dmabuf, but supposedly does this in a less hacky way.
 
-Open `CMakeLists.txt` and edit the following lines at the beginning:
+This plugin is Linux-Only, as DMA-BUF is a Linux-only thing. Other platforms might have similar functionality, but I'm totally not an expert.
 
-```cmake
-# Change `obs-plugintemplate` to your plugin's name in a machine-readable format
-# (e.g.: obs-myawesomeplugin) and set the value next to `VERSION` as your plugin's current version
-project(obs-plugintemplate VERSION 1.0.0)
+## Building
 
-# Replace `Your Name Here` with the name (yours or your organization's) you want
-# to see as the author of the plugin (in the plugin's metadata itself and in the installers)
-set(PLUGIN_AUTHOR "Your Name Here")
+It requires latest master OBS, as EGL support is very fresh and has not yet been released. You'll need to compile and *install* master OBS yourself. Make sure that installation prefix is fed into `cmake` invocation too, as it needs access to latest OBS headers from master and won't work with any released version.
 
-# Replace `com.example.obs-plugin-template` with a unique Bundle ID for macOS releases
-# (used both in the installer and when submitting the installer for notarization)
-set(MACOS_BUNDLEID "com.example.obs-plugintemplate")
-
-# Replace `me@contoso.com` with the maintainer email address you want to put in Linux packages
-set(LINUX_MAINTAINER_EMAIL "me@contoso.com")
+Generally it works like this:
+```
+export CMAKE_PREFIX_PATH=<obs-prefix>
+cmake .. -GNinja -DCMAKE_INSTALL_PREFIX="$CMAKE_PREFIX_PATH"
+ninja
+ninja install
 ```
 
-## CI / Build Bot
+Note that install is slightly broken and won't install things properly, so some manual intervention is needed:
+```
+mv "$CMAKE_PREFIX_PATH"/lib64/obs-plugins/linux-kmsgrab.so "$CMAKE_PREFIX_PATH/lib/obs-plugins/"
+cp obs-kmsgrab-send "$CMAKE_PREFIX_PATH/bin/"
+sudo setcap cap_sys_admin+ep "$CMAKE_PREFIX_PATH/bin/obs-kmsgrab-send"
+```
 
-The CI scripts are made for Azure Pipelines. The sections below detail some of the common tasks possible with that CI configuration.
+Yes, `obs-kmsgrab-send` does need `CAP_SYS_ADMIN` in order to be able to grab any screen contents. There's no way around that unfortunately.
 
-### Retrieving build artifacts
-
-Each build produces installers and packages that you can use for testing and releases. These artifacts can be found a Build's page on Azure Pipelines.
-
-#### Building a Release
-
-Simply create and push a tag, and Azure Pipelines will run the pipeline in Release Mode. This mode uses the tag as its version number instead of the git ref in normal mode.
-
-### Signing and Notarizing on macOS
-
-On macOS, Release Mode builds will be signed and sent to Apple for notarization if `macosSignAndNotarize` is set to `True` at the top of the `azure-pipelines.yml` file. **You'll need a paid Apple Developer Account for this.**
-
-In addition to enabling `macosSignAndNotarize`, you'll need to setup a few more things for Signing and Notarizing to work:
-
-- On your Apple Developer dashboard, go to "Certificates, IDs & Profiles" and create two signing certificates:
-    - One of the "Developer ID Application" type. It will be used to sign the plugin's binaries
-    - One of the "Developer ID Installer" type. It will be used to sign the plugin's installer
-- Using the Keychain app on macOS, export these two certificates and keys into a .p12 file **protected with a strong password**
-- Add that `Certificates.P12` file as a [Secure File in Azure Pipelines](https://docs.microsoft.com/en-us/azure/devops/pipelines/library/secure-files?view=azure-devops) and make sure it is named `Certificates.p12`
-- Add the following secrets in your pipeline settings:
-    - `secrets.macOS.certificatesImportPassword`: Password of the .p12 file generated earlier
-    - `secrets.macOS.codeSigningIdentity`: Name of the "Developer ID Application" signing certificate generated earlier
-    - `secrets.macOS.installerSigningIdentity`: Name of "Developer ID Installer" signing certificate generated earlier
-    - `secrets.macOS.notarization.username`: Your Apple Developer Account's username
-    - `secrets.macOS.notarization.password`: Your Apple Developer Account's password
-    - `secrets.macOS.notarization.providerShortName`: Identifier (`Provider Short Name`, as Apple calls it) of the Developer Team to which the signing certificates belong. 
+## Known issues
+- no device pick up -- just uses first available
+- no sync whatsoever, known to rarly cause weird capture glitches (dirty regions missing for a few seconds)
+- no resolution/framebuffer following -- may break if output resolution changes
+- can conflict with some x11 compositors and wayland impls
