@@ -24,9 +24,9 @@ ninja
 ninja install
 ```
 
-`obs-kmsgrab-send` binary needs `CAP_SYS_ADMIN` in order to be able to grab any screen contents using libdrm. There's no way around that unfortunately, as the ability to grab any output from any user has serious security implications.
+`linux-kmsgrab-send` binary needs `CAP_SYS_ADMIN` in order to be able to grab any screen contents using libdrm. There's no way around that unfortunately, as the ability to grab any output from any user has serious security implications.
 ```
-sudo setcap cap_sys_admin+ep "$CMAKE_PREFIX_PATH/bin/obs-kmsgrab-send"
+sudo setcap cap_sys_admin+ep "$CMAKE_PREFIX_PATH/lib64/obs-plugins/linux-kmsgrab-send"
 ```
 
 ## Known issues
@@ -34,4 +34,4 @@ sudo setcap cap_sys_admin+ep "$CMAKE_PREFIX_PATH/bin/obs-kmsgrab-send"
 - no sync whatsoever, known to rarily cause weird capture glitches (dirty regions missing for a few seconds)
 - no resolution/framebuffer following -- may break if output resolution changes
 - may conflict with some x11 compositors and wayland impls
-- currently just having this `obs-kmsgrab-send` binary lying around with caps set will make it possible for anyone having local user on your machine to grab any of your screens. Decide for yourself whether that's a concerning threat model for your situation.
+- currently just having this `linux-kmsgrab-send` binary lying around with caps set will make it possible for anyone having local user on your machine to grab any of your screens. Decide for yourself whether that's a concerning threat model for your situation.

@@ -65,9 +65,9 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 	Qt5::Widgets
 )
 
-add_executable(obs-kmsgrab-send src/drmsend.c)
-target_include_directories(obs-kmsgrab-send PRIVATE ${DRM_INCLUDE_DIRS})
-target_link_libraries(obs-kmsgrab-send PRIVATE ${DRM_LIBRARIES})
+add_executable(linux-kmsgrab-send src/drmsend.c)
+target_include_directories(linux-kmsgrab-send PRIVATE ${DRM_INCLUDE_DIRS})
+target_link_libraries(linux-kmsgrab-send PRIVATE ${DRM_LIBRARIES})
 
 include(GNUInstallDirs)
 
@@ -76,16 +76,10 @@ target_link_libraries(${CMAKE_PROJECT_NAME} obs-frontend-api)
 
 file(GLOB locale_files data/locale/*.ini)
 
-if(NOT OBS_MULTIARCH_SUFFIX AND DEFINED ENV{OBS_MULTIARCH_SUFFIX})
-	set(OBS_MULTIARCH_SUFFIX "$ENV{OBS_MULTIARCH_SUFFIX}")
-endif()
-
-set(OBS_LIBRARY_DESTINATION "lib${OBS_MULTIARCH_SUFFIX}")
-set(OBS_PLUGIN_DESTINATION "${OBS_LIBRARY_DESTINATION}/obs-plugins")
-
-install(TARGETS ${CMAKE_PROJECT_NAME} obs-kmsgrab-send
+set(OBS_PLUGIN_DESTINATION "${CMAKE_INSTALL_LIBDIR}/obs-plugins")
+install(TARGETS ${CMAKE_PROJECT_NAME} linux-kmsgrab-send
 	LIBRARY DESTINATION "${OBS_PLUGIN_DESTINATION}"
-	RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+	RUNTIME DESTINATION "${OBS_PLUGIN_DESTINATION}")
 
 install(FILES ${locale_files}
 	DESTINATION "${CMAKE_INSTALL_FULL_DATAROOTDIR}/obs/obs-plugins/${CMAKE_PROJECT_NAME}/locale")

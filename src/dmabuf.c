@@ -5,10 +5,8 @@
 #include <graphics/graphics-internal.h>
 
 #include <obs-module.h>
-//#include <obs-internal.h>
 #include <obs-nix-platform.h>
 #include <util/platform.h>
-//#include <glad/glad_egl.h>
 
 #include <GL/gl.h>
 #include <EGL/egl.h>
@@ -17,7 +15,6 @@
 #include <stdio.h>
 
 #include "plugin-macros.generated.h"
-
 
 // FIXME stringify errno
 
@@ -60,8 +57,8 @@ typedef struct {
 	bool show_cursor;
 } dmabuf_source_t;
 
-static const char obs_drmsend_suffix[] = "-kmsgrab-send";
-static const int obs_drmsend_suffix_len = sizeof(obs_drmsend_suffix) - 1;
+static const char send_binary_name[] = "linux-kmsgrab-send";
+static const size_t send_binary_len = sizeof(send_binary_name) - 1;
 static const char socket_filename[] = "/obs-kmsgrab-send.sock";
 static const int socket_filename_len = sizeof(socket_filename) - 1;
 
@@ -103,31 +100,26 @@ static int dmabuf_source_receive_framebuffers(dmabuf_source_fblist_t *list)
 		blog(LOG_DEBUG, "Will bind socket to %s", addr.sun_path);
 	}
 
-	/* Find obs-kmsgrab-send */
-	char drmsend_filename[PATH_MAX + 1];
+	/* Find linux-kmsgrab-send */
+	char *drmsend_filename = NULL;
 	{
-		const ssize_t drmsend_filename_len =
-			readlink("/proc/self/exe", drmsend_filename,
-				 sizeof(drmsend_filename));
-		if (drmsend_filename_len < 0) {
-			blog(LOG_ERROR,
-			     "Unable to retrieve full path to obs binary: %d",
-			     errno);
-			return 0;
-		}
+		const char* plugin_path = obs_get_module_binary_path(obs_current_module());
+		const char* plugin_path_last_sep = strrchr(plugin_path, '/');
+		if (!plugin_path_last_sep)
+			plugin_path_last_sep = plugin_path;
+		else
+			plugin_path_last_sep += 1;
 
-		if (drmsend_filename_len + obs_drmsend_suffix_len + 1 >
-		    (int)sizeof(drmsend_filename)) {
-			blog(LOG_ERROR, "Full path to obs-kmsgrab-send is too long");
-			return 0;
-		}
-
-		memcpy(drmsend_filename + drmsend_filename_len,
-		       obs_drmsend_suffix, obs_drmsend_suffix_len + 1);
+		const ssize_t prefix_len = plugin_path_last_sep - plugin_path;
+		const ssize_t full_len = prefix_len;
+		const ssize_t drmsend_filename_len = full_len + send_binary_len + 1;
+		drmsend_filename = malloc(drmsend_filename_len);
+		memcpy(drmsend_filename, plugin_path, prefix_len);
+		memcpy(drmsend_filename + prefix_len, send_binary_name, send_binary_len + 1);
 
 		if (!os_file_exists(drmsend_filename)) {
 			blog(LOG_ERROR, "%s doesn't exist", drmsend_filename);
-			return 0;
+			goto filename_cleanup;
 		}
 
 		blog(LOG_DEBUG, "Will execute obs-kmsgrab-send from %s",
@@ -311,6 +303,9 @@ child_cleanup:
 socket_cleanup:
 	close(sockfd);
 	unlink(addr.sun_path);
+
+filename_cleanup:
+	free(drmsend_filename);
 	return retval;
 }
 
