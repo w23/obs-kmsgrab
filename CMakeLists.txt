@@ -25,6 +25,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(LibObs REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Widgets)
 
+# LOL TODO for this we need cmake >= 3.19 w/ cmake policy CMP0109 set to NEW
+#find_program(POLKIT NAMES pkexec)
+option(ENABLE_POLKIT "Use pkexec for elevated drmsend privileges" ON)
+
 find_package(PkgConfig)
 pkg_check_modules(DRM libdrm)
 
@@ -32,6 +36,10 @@ if(NOT DRM_FOUND)
 	message(FATAL_ERROR "libdrm(-dev) not found")
 	return()
 endif()
+
+include(GNUInstallDirs)
+
+set(OBS_PLUGIN_DESTINATION "${CMAKE_INSTALL_LIBDIR}/obs-plugins")
 
 configure_file(
 	src/plugin-macros.h.in
@@ -52,6 +60,13 @@ set(PLUGIN_HEADERS
 
 add_library(${CMAKE_PROJECT_NAME} MODULE ${PLUGIN_SOURCES} ${PLUGIN_HEADERS})
 
+if (ENABLE_POLKIT)
+	message(STATUS "Using Polkit/pkexec for elevating drmsend privileges")
+	target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE USE_PKEXEC)
+else()
+	message(WARNING "Polkit support is disabled. You'll need to manually run `sudo setcap cap_sys_admin+ep \"${OBS_PLUGIN_DESTINATION}/obs-plugins/linux-kmsgrab-send\"` to allow it to grab framebuffers")
+endif()
+
 include_directories(
 	"${CMAKE_SOURCE_DIR}/src"
 	"${LIBOBS_INCLUDE_DIR}/../UI/obs-frontend-api"
@@ -69,14 +84,11 @@ add_executable(linux-kmsgrab-send src/drmsend.c)
 target_include_directories(linux-kmsgrab-send PRIVATE ${DRM_INCLUDE_DIRS})
 target_link_libraries(linux-kmsgrab-send PRIVATE ${DRM_LIBRARIES})
 
-include(GNUInstallDirs)
-
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES PREFIX "")
 target_link_libraries(${CMAKE_PROJECT_NAME} obs-frontend-api)
 
 file(GLOB locale_files data/locale/*.ini)
 
-set(OBS_PLUGIN_DESTINATION "${CMAKE_INSTALL_LIBDIR}/obs-plugins")
 install(TARGETS ${CMAKE_PROJECT_NAME} linux-kmsgrab-send
 	LIBRARY DESTINATION "${OBS_PLUGIN_DESTINATION}"
 	RUNTIME DESTINATION "${OBS_PLUGIN_DESTINATION}")
@@ -84,8 +96,3 @@ install(TARGETS ${CMAKE_PROJECT_NAME} linux-kmsgrab-send
 install(FILES ${locale_files}
 	DESTINATION "${CMAKE_INSTALL_FULL_DATAROOTDIR}/obs/obs-plugins/${CMAKE_PROJECT_NAME}/locale")
 
-# this breaks building OBS under a regular user
-# FIXME Make it a part of install process, which should run under root
-#
-#	add_custom_command(TARGET drmsend POST_BUILD
-#		COMMAND setcap cap_sys_admin+ep "$<TARGET_FILE:drmsend>")

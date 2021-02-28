@@ -24,14 +24,16 @@ ninja
 ninja install
 ```
 
-`linux-kmsgrab-send` binary needs `CAP_SYS_ADMIN` in order to be able to grab any screen contents using libdrm. There's no way around that unfortunately, as the ability to grab any output from any user has serious security implications.
+By default this plugin will use Polkit's `pkexec` to run the `linux-kmsgrab-send` helper utility with elevated privileges (i.e. as root). This is required in order to be able to grab screens using kms/libdrm API, as we completely sidestep X11/Wayland management of current drm context. When OBS starts you'll be presented with polkit screen asking for root password, and then you'll be asked again when configuring the capture module.
+
+If you don't have Polkit set up, you need to compile this plugin with `-DENABLE_POLKIT=NO` cmake flag and entitle the `linux-kmsgrab-send` binary with `CAP_SYS_ADMIN` capability flag manually, like this:
 ```
 sudo setcap cap_sys_admin+ep "$CMAKE_PREFIX_PATH/lib64/obs-plugins/linux-kmsgrab-send"
 ```
+Note that this has serious system-wide security implications: just having this `linux-kmsgrab-send` binary lying around with caps set will make it possible for anyone having local user on your machine to grab any of your screens. Decide for yourself whether that's a concerning threat model for your situation.
 
 ## Known issues
 - there's no way to specify grabbing device (in cause you have more than one GPU), it will just use the first available
 - no sync whatsoever, known to rarily cause weird capture glitches (dirty regions missing for a few seconds)
 - no resolution/framebuffer following -- may break if output resolution changes
 - may conflict with some x11 compositors and wayland impls
-- currently just having this `linux-kmsgrab-send` binary lying around with caps set will make it possible for anyone having local user on your machine to grab any of your screens. Decide for yourself whether that's a concerning threat model for your situation.

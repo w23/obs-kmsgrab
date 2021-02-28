@@ -148,10 +148,18 @@ static int dmabuf_source_receive_framebuffers(dmabuf_source_fblist_t *list)
 		blog(LOG_ERROR, "Cannot fork(): %d", errno);
 		goto socket_cleanup;
 	} else if (drmsend_pid == 0) {
+#ifdef USE_PKEXEC
+		const char pkexec[] = "pkexec";
+		execlp(pkexec, pkexec, drmsend_filename, dri_filename,
+		       addr.sun_path, NULL);
+		fprintf(stderr, "Cannot execlp(%s, %s): %d\n", pkexec, drmsend_filename,
+			errno);
+#else
 		execlp(drmsend_filename, drmsend_filename, dri_filename,
 		       addr.sun_path, NULL);
 		fprintf(stderr, "Cannot execlp(%s): %d\n", drmsend_filename,
 			errno);
+#endif
 		exit(-1);
 	}
 
