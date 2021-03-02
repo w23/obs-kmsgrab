@@ -37,3 +37,4 @@ Note that this has serious system-wide security implications: just having this `
 - no sync whatsoever, known to rarily cause weird capture glitches (dirty regions missing for a few seconds)
 - no resolution/framebuffer following -- may break if output resolution changes
 - may conflict with some x11 compositors and wayland impls
+- will not work on Nvidia cards. Their drivers are special snowflakes that don't provide libdrm/dmabuf APIs.
