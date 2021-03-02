@@ -8,27 +8,12 @@
 #include <obs-nix-platform.h>
 #include <util/platform.h>
 
-#include <GL/gl.h>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
 #include <sys/wait.h>
 #include <stdio.h>
 
 #include "plugin-macros.generated.h"
 
 // FIXME stringify errno
-
-// FIXME integrate into glad
-typedef void(APIENTRYP PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)(
-	GLenum target, GLeglImageOES image);
-GLAPI PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glad_glEGLImageTargetTexture2DOES;
-typedef void(APIENTRYP PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC)(
-	GLenum target, GLeglImageOES image);
-GLAPI PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC
-	glad_glEGLImageTargetRenderbufferStorageOES;
-
-// FIXME glad
-static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -48,8 +33,6 @@ typedef struct {
 	xcb_connection_t *xcb;
 	xcb_xcursor_t *cursor;
 	gs_texture_t *texture;
-	EGLDisplay edisp;
-	EGLImage eimage;
 
 	dmabuf_source_fblist_t fbs;
 	int active_fb;
@@ -320,12 +303,6 @@ filename_cleanup:
 static void dmabuf_source_close(dmabuf_source_t *ctx)
 {
 	blog(LOG_DEBUG, "dmabuf_source_close %p", ctx);
-
-	if (ctx->eimage != EGL_NO_IMAGE) {
-		eglDestroyImage(ctx->edisp, ctx->eimage);
-		ctx->eimage = EGL_NO_IMAGE;
-	}
-
 	ctx->active_fb = -1;
 }
 
@@ -351,51 +328,28 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 	blog(LOG_DEBUG, "%dx%d %d %d %d", fb->width, fb->height,
 	     ctx->fbs.fb_fds[index], fb->offset, fb->pitch);
 
+	// FIXME why is this needed?
 	obs_enter_graphics();
 
-	const graphics_t *const graphics = gs_get_context();
-	const EGLDisplay edisp = eglGetCurrentDisplay();
-	ctx->edisp = edisp;
+	const uint32_t stride = fb->pitch;
+	const uint32_t offset = fb->offset;
+	ctx->texture = gs_texture_create_from_dmabuf(fb->width, fb->height,
+			GS_BGRA, // FIXME handle fourcc?
+			1, // FIXME handle planes
+			ctx->fbs.fb_fds + index,
+			&stride,
+			&offset,
+			NULL // FIXME what are modifiers? we just don't know
+	);
 
-	/* clang-format off */
-	// FIXME check for EGL_EXT_image_dma_buf_import
-	EGLAttrib eimg_attrs[] = {
-		EGL_WIDTH, fb->width,
-		EGL_HEIGHT, fb->height,
-		EGL_LINUX_DRM_FOURCC_EXT, fb->fourcc,
-		EGL_DMA_BUF_PLANE0_FD_EXT, ctx->fbs.fb_fds[index],
-		EGL_DMA_BUF_PLANE0_OFFSET_EXT, fb->offset,
-		EGL_DMA_BUF_PLANE0_PITCH_EXT, fb->pitch,
-		EGL_NONE
-	};
-	/* clang-format on */
+	obs_leave_graphics();
 
-	ctx->eimage = eglCreateImage(edisp, EGL_NO_CONTEXT,
-				     EGL_LINUX_DMA_BUF_EXT, 0, eimg_attrs);
-
-	if (!ctx->eimage) {
-		// FIXME stringify error
-		blog(LOG_ERROR, "Cannot create EGLImage: %d", eglGetError());
-		dmabuf_source_close(ctx);
-		goto exit;
+	if (!ctx->texture) {
+		blog(LOG_ERROR, "Could not create texture from dmabuf source");
+		return;
 	}
 
-	// FIXME handle fourcc?
-	ctx->texture = gs_texture_create(fb->width, fb->height, GS_BGRA, 1,
-					 NULL, GS_DYNAMIC);
-	const GLuint gltex = *(GLuint *)gs_texture_get_obj(ctx->texture);
-	blog(LOG_DEBUG, "gltex = %x", gltex);
-	glBindTexture(GL_TEXTURE_2D, gltex);
-
-	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, ctx->eimage);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
 	ctx->active_fb = index;
-
-exit:
-	obs_leave_graphics();
-	return;
 }
 
 static void dmabuf_source_update(void *data, obs_data_t *settings)
@@ -413,31 +367,6 @@ static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
 {
 	blog(LOG_DEBUG, "dmabuf_source_create");
 	(void)settings;
-
-	{
-		// FIXME is it desirable to enter graphics at create time?
-		// Or is it better to postpone all activity to after the module
-		// was succesfully and unconditionally created?
-		obs_enter_graphics();
-		const int device_type = gs_get_device_type();
-		obs_leave_graphics();
-		if (device_type != GS_DEVICE_OPENGL) {
-			blog(LOG_ERROR, "dmabuf_source requires EGL");
-			return NULL;
-		}
-	}
-
-	// FIXME move to glad
-	if (!glEGLImageTargetTexture2DOES) {
-		glEGLImageTargetTexture2DOES =
-			(PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress(
-				"glEGLImageTargetTexture2DOES");
-	}
-
-	if (!glEGLImageTargetTexture2DOES) {
-		blog(LOG_ERROR, "GL_OES_EGL_image extension is required");
-		return NULL;
-	}
 
 	dmabuf_source_t *ctx = bzalloc(sizeof(dmabuf_source_t));
 	ctx->source = source;
