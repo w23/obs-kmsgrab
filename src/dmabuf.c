@@ -45,10 +45,15 @@ static const size_t send_binary_len = sizeof(send_binary_name) - 1;
 static const char socket_filename[] = "/obs-kmsgrab-send.sock";
 static const int socket_filename_len = sizeof(socket_filename) - 1;
 
-static int dmabuf_source_receive_framebuffers(dmabuf_source_fblist_t *list)
+static void set_visible(obs_properties_t *ppts, const char *name, bool visible)
 {
-	const char *dri_filename = "/dev/dri/card0"; // FIXME
+	obs_property_t *p = obs_properties_get(ppts, name);
+	obs_property_set_visible(p, visible);
+}
 
+
+static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_source_fblist_t *list)
+{
 	blog(LOG_DEBUG, "dmabuf_source_receive_framebuffers");
 
 	int retval = 0;
@@ -306,6 +311,15 @@ static void dmabuf_source_close(dmabuf_source_t *ctx)
 	ctx->active_fb = -1;
 }
 
+static void dmabuf_source_close_fds(dmabuf_source_t *ctx)
+{
+	for (int i = 0; i < ctx->fbs.resp.num_framebuffers; ++i) {
+		const int fd = ctx->fbs.fb_fds[i];
+		if (fd > 0)
+			close(fd);
+	}
+}
+
 static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 {
 	blog(LOG_DEBUG, "dmabuf_source_open %p %#x", ctx, fb_id);
@@ -355,10 +369,11 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 static void dmabuf_source_update(void *data, obs_data_t *settings)
 {
 	dmabuf_source_t *ctx = data;
-	blog(LOG_DEBUG, "dmabuf_source_udpate %p", ctx);
+	blog(LOG_DEBUG, "dmabuf_source_udpate", ctx);
 
 	ctx->show_cursor = obs_data_get_bool(settings, "show_cursor");
 
+	dmabuf_source_close_fds(ctx);
 	dmabuf_source_close(ctx);
 	dmabuf_source_open(ctx, obs_data_get_int(settings, "framebuffer"));
 }
@@ -377,7 +392,7 @@ static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
 		ctx->fbs.fb_fds[i] = -1;
 	}
 
-	if (!dmabuf_source_receive_framebuffers(&ctx->fbs)) {
+	if (!dmabuf_source_receive_framebuffers(obs_data_get_string(settings, "dri_card"), &ctx->fbs)) {
 		blog(LOG_ERROR, "Unable to enumerate DRM/KMS framebuffers");
 		bfree(ctx);
 		return NULL;
@@ -385,23 +400,13 @@ static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
 
 	ctx->xcb = xcb_connect(NULL, NULL);
 	if (!ctx->xcb || xcb_connection_has_error(ctx->xcb)) {
-		blog(LOG_ERROR,
-		     "Unable to open X display, cursor will not be available");
+		blog(LOG_ERROR, "Unable to open X display, cursor will not be available");
 	}
 
 	ctx->cursor = xcb_xcursor_init(ctx->xcb);
 
 	dmabuf_source_update(ctx, settings);
 	return ctx;
-}
-
-static void dmabuf_source_close_fds(dmabuf_source_t *ctx)
-{
-	for (int i = 0; i < ctx->fbs.resp.num_framebuffers; ++i) {
-		const int fd = ctx->fbs.fb_fds[i];
-		if (fd > 0)
-			close(fd);
-	}
 }
 
 static void dmabuf_source_destroy(void *data)
@@ -471,9 +476,40 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 	}
 }
 
+static bool dri_device_selected(void *data, obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
+{
+	blog(LOG_DEBUG, "dri_device_selected");
+	dmabuf_source_t *ctx = data;
+
+	obs_property_t *fb_list = obs_properties_get(props, "framebuffer");
+	obs_property_list_clear(fb_list);
+
+	if (!dmabuf_source_receive_framebuffers(obs_data_get_string(settings, "dri_card"), &ctx->fbs))
+	{
+		blog(LOG_ERROR, "Unable to enumerate DRM/KMS framebuffers");
+		set_visible(props, "framebuffer", false);
+		set_visible(props, "show_cursor", false);
+		return false;
+	}
+
+	set_visible(props, "framebuffer", true);
+	set_visible(props, "show_cursor", true);
+
+	for (int i = 0; i < ctx->fbs.resp.num_framebuffers; ++i) {
+		const drmsend_framebuffer_t *fb = ctx->fbs.resp.framebuffers + i;
+		char buf[128];
+		sprintf(buf, "%dx%d (%#x)", fb->width, fb->height, fb->fb_id);
+		obs_property_list_add_int(fb_list, buf, fb->fb_id);
+	}
+
+	return true;
+}
+
+
 static void dmabuf_source_get_defaults(obs_data_t *defaults)
 {
 	obs_data_set_default_bool(defaults, "show_cursor", true);
+	obs_data_set_default_string(defaults, "dri_card", "/dev/dri/card0");
 }
 
 static obs_properties_t *dmabuf_source_get_properties(void *data)
@@ -483,30 +519,43 @@ static obs_properties_t *dmabuf_source_get_properties(void *data)
 
 	dmabuf_source_fblist_t stack_list = {0};
 
-	if (!dmabuf_source_receive_framebuffers(&stack_list)) {
-		blog(LOG_ERROR, "Unable to enumerate DRM/KMS framebuffers");
-		return NULL;
-	}
-
 	obs_properties_t *props = obs_properties_create();
+	obs_property_t *dri_device_list;
 
-	obs_properties_add_bool(props, "show_cursor",
-				obs_module_text("CaptureCursor"));
+	dri_device_list = obs_properties_add_list(props, "dri_card", "DRI Card",
+                                       OBS_COMBO_TYPE_LIST,
+                                       OBS_COMBO_FORMAT_STRING);
+
+	obs_property_set_modified_callback2(dri_device_list, dri_device_selected, data);
 
 	obs_property_t *fb_list = obs_properties_add_list(
 		props, "framebuffer", "Framebuffer to capture",
 		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 
-	for (int i = 0; i < stack_list.resp.num_framebuffers; ++i) {
-		const drmsend_framebuffer_t *fb =
-			stack_list.resp.framebuffers + i;
+	obs_properties_add_bool(props, "show_cursor",
+		obs_module_text("CaptureCursor"));
+
+	char path[32];
+	for (int i = 0;; i++) {
+		sprintf(path, "/dev/dri/card%d", i);
+		if (access(path, F_OK) == 0)
+			obs_property_list_add_string(dri_device_list, path, path);
+		else
+			break;
+	}
+
+	if (!ctx->fbs.resp.num_framebuffers) {
+		set_visible(props, "framebuffer", false);
+		set_visible(props, "show_cursor", false);
+		return props;
+	}
+
+	for (int i = 0; i < ctx->fbs.resp.num_framebuffers; ++i) {
+		const drmsend_framebuffer_t *fb = ctx->fbs.resp.framebuffers + i;
 		char buf[128];
 		sprintf(buf, "%dx%d (%#x)", fb->width, fb->height, fb->fb_id);
 		obs_property_list_add_int(fb_list, buf, fb->fb_id);
 	}
-
-	dmabuf_source_close_fds(ctx);
-	memcpy(&ctx->fbs, &stack_list, sizeof(stack_list));
 
 	return props;
 }
@@ -566,12 +615,12 @@ bool obs_module_load(void)
 	}
 
 	obs_register_source(&dmabuf_input);
-  blog(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
+	blog(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;
 }
 
 void obs_module_unload(void)
 {
 	// TODO deinit things
-  blog(LOG_INFO, "plugin unloaded");
+	blog(LOG_INFO, "plugin unloaded");
 }
