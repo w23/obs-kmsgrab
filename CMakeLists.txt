@@ -77,6 +77,7 @@ include_directories(
 target_link_libraries(${CMAKE_PROJECT_NAME}
 	libobs
 	xcb
+	xcb-xfixes
 	Qt5::Core
 	Qt5::Widgets
 )
