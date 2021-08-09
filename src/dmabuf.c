@@ -1,6 +1,8 @@
 #include "drmsend.h"
 #include "xcursor-xcb.h"
 
+#include "drm-helpers.h"
+
 #include <graphics/graphics.h>
 #include <graphics/graphics-internal.h>
 
@@ -204,14 +206,13 @@ static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_s
 		msg.msg_iovlen = 1;
 
 		char cmsg_buf[CMSG_SPACE(sizeof(int) *
-					 OBS_DRMSEND_MAX_FRAMEBUFFERS)];
+					 OBS_DRMSEND_MAX_FRAMEBUFFERS) * 4];
 		msg.msg_control = cmsg_buf;
 		msg.msg_controllen = sizeof(cmsg_buf);
 		struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 		cmsg->cmsg_level = SOL_SOCKET;
 		cmsg->cmsg_type = SCM_RIGHTS;
-		cmsg->cmsg_len =
-			CMSG_LEN(sizeof(int) * OBS_DRMSEND_MAX_FRAMEBUFFERS);
+		cmsg->cmsg_len = sizeof(cmsg_buf);
 
 		// FIXME blocking, may hang if drmsend dies before sending anything
 		const ssize_t recvd = recvmsg(connfd, &msg, 0);
@@ -236,17 +237,17 @@ static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_s
 		}
 
 		if (cmsg->cmsg_len !=
-		    CMSG_LEN(sizeof(int) * list->resp.num_framebuffers)) {
+		    CMSG_LEN(sizeof(int) * list->resp.num_fds)) {
 			blog(LOG_ERROR,
 			     "Received fd size mismatch: %d received, %d expected",
 			     (int)cmsg->cmsg_len,
 			     (int)CMSG_LEN(sizeof(int) *
-					   list->resp.num_framebuffers));
+					   list->resp.num_fds));
 			break;
 		}
 
 		memcpy(list->fb_fds, CMSG_DATA(cmsg),
-		       sizeof(int) * list->resp.num_framebuffers);
+		       sizeof(int) * list->resp.num_fds);
 		retval = 1;
 		break;
 	}
@@ -259,8 +260,8 @@ static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_s
 			const drmsend_framebuffer_t *fb =
 				list->resp.framebuffers + i;
 			blog(LOG_INFO,
-			     "Received width=%d height=%d pitch=%u fourcc=%#x fd=%d",
-			     fb->width, fb->height, fb->pitch, fb->fourcc,
+			     "Received width=%d height=%d planes=%u fourcc=%s(%#x) fd=%d",
+			     fb->width, fb->height, fb->planes, getDrmFourccName(fb->fourcc), fb->fourcc,
 			     list->fb_fds[i]);
 		}
 	}
@@ -339,21 +340,22 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 
 	const drmsend_framebuffer_t *fb = ctx->fbs.resp.framebuffers + index;
 
-	blog(LOG_DEBUG, "%dx%d %d %d %d", fb->width, fb->height,
-	     ctx->fbs.fb_fds[index], fb->offset, fb->pitch);
+	blog(LOG_DEBUG, "%dx%d %d planes=%d", fb->width, fb->height,
+	     ctx->fbs.fb_fds[index], fb->planes);
 
 	// FIXME why is this needed?
 	obs_enter_graphics();
 
-	const uint32_t stride = fb->pitch;
-	const uint32_t offset = fb->offset;
-	ctx->texture = gs_texture_create_from_dmabuf(fb->width, fb->height,
-			GS_BGRA, // FIXME handle fourcc?
-			1, // FIXME handle planes
-			ctx->fbs.fb_fds + index,
-			&stride,
-			&offset,
-			NULL // FIXME what are modifiers? we just don't know
+	const uint64_t modifiers[4] = {fb->modifiers, fb->modifiers, fb->modifiers, fb->modifiers};
+	ctx->texture = gs_texture_create_from_dmabuf(
+			fb->width, fb->height,
+			fb->fourcc,
+			drmFourccToGs(fb->fourcc),
+			fb->planes,
+			ctx->fbs.fb_fds + fb->fds_offset,
+			fb->pitches,
+			fb->offsets,
+			modifiers
 	);
 
 	obs_leave_graphics();

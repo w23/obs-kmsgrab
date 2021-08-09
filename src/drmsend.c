@@ -24,6 +24,163 @@ void printUsage(const char *name)
 	MSG("usage: %s /dev/dri/card socket_filename", name);
 }
 
+typedef struct {
+	drmsend_response_t response;
+	int fb_fds[OBS_DRMSEND_MAX_FRAMEBUFFERS * 4];
+} response_data_t;
+
+int responseSend(const char *sockname, response_data_t *data) {
+	int sockfd = -1;
+	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	{
+		struct sockaddr_un addr;
+		addr.sun_family = AF_UNIX;
+		if (strlen(sockname) >= sizeof(addr.sun_path)) {
+			MSG("Socket filename '%s' is too long, max %d",
+			    sockname, (int)sizeof(addr.sun_path));
+			return 0;
+		}
+
+		strcpy(addr.sun_path, sockname);
+		if (-1 == connect(sockfd, (const struct sockaddr *)&addr,
+				  sizeof(addr))) {
+			MSG("Cannot connect to unix socket: %d", errno);
+			return 0;
+		}
+	}
+
+	data->response.tag = OBS_DRMSEND_TAG;
+
+	struct msghdr msg = {0};
+
+	struct iovec io = {
+		.iov_base = &data->response,
+		.iov_len = sizeof(data->response),
+	};
+	msg.msg_iov = &io;
+	msg.msg_iovlen = 1;
+
+	const int fb_size = sizeof(int) * data->response.num_fds;
+	char cmsg_buf[CMSG_SPACE(sizeof(data->fb_fds))];
+	msg.msg_control = cmsg_buf;
+	msg.msg_controllen = CMSG_SPACE(fb_size);
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_RIGHTS;
+	cmsg->cmsg_len = CMSG_LEN(fb_size);
+	memcpy(CMSG_DATA(cmsg), data->fb_fds, fb_size);
+
+	const ssize_t sent = sendmsg(sockfd, &msg, 0);
+
+	if (sent < 0) {
+		perror("cannot sendmsg");
+		goto cleanup;
+	}
+
+	MSG("sent %d bytes", (int)sent);
+
+cleanup:
+	close(sockfd);
+	return 1;
+}
+
+const char *program_name;
+
+int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, int drmfd) {
+	// Skip duplicates
+	for (int i = 0; i < data->response.num_framebuffers; ++i) {
+		if (data->response.framebuffers[i].fb_id == drmfb->fb_id) {
+			MSG("Duplicate fb_id %#x found", drmfb->fb_id);
+			return 0;
+		}
+	}
+
+	MSG("\t\tfb%d: %#x %ux%u fourcc=%#x modifier=%#lx flags=%#x",
+			data->response.num_framebuffers, drmfb->fb_id, drmfb->width, drmfb->height, drmfb->pixel_format, drmfb->modifier, drmfb->flags);
+
+	if (data->response.num_framebuffers == OBS_DRMSEND_MAX_FRAMEBUFFERS) {
+		ERR("Too many framebuffers, max %d", OBS_DRMSEND_MAX_FRAMEBUFFERS);
+		return -1;
+	}
+
+	drmsend_framebuffer_t *fb = data->response.framebuffers + data->response.num_framebuffers;
+
+	fb->planes = 0;
+	int fb_fds[4] = {-1, -1, -1, -1};
+	for (int i = 0; i < 4 && drmfb->handles[i]; ++i) {
+		const int ret = drmPrimeHandleToFD(drmfd, drmfb->handles[i], 0, fb_fds + i);
+
+		MSG("\t\t\t%d: handle=%#x(%d) pitch=%u offset=%u", i, drmfb->handles[i], fb_fds[i], drmfb->pitches[i], drmfb->offsets[i]);
+
+		if (ret != 0 || fb_fds[i] == -1) {
+			ERR("Cannot get fd for fb %#x handle %#x: %s (%d)", drmfb->fb_id, drmfb->handles[i], strerror(errno), errno);
+			return -1;
+		}
+
+		fb->offsets[i] = drmfb->offsets[i];
+		fb->pitches[i] = drmfb->pitches[i];
+
+		++fb->planes;
+	}
+
+	if (fb->planes == 0) {
+		ERR("\t\t\tNo valid FB handles were found for fb %#x", drmfb->fb_id);
+		ERR("\t\t\tPossible reason: not permitted to get FB handles. Do `sudo setcap cap_sys_admin+ep %s`", program_name);
+		return -1;
+	}
+
+	fb->width = drmfb->width;
+	fb->height = drmfb->height;
+	fb->fourcc = drmfb->pixel_format;
+	fb->modifiers = drmfb->modifier;
+	fb->fds_offset = data->response.num_fds;
+
+	memcpy(data->fb_fds + data->response.num_fds, fb_fds, fb->planes * sizeof(int));
+	data->response.num_fds += fb->planes;
+
+	++data->response.num_framebuffers;
+	return 0;
+}
+
+void readDrmData(int drmfd, response_data_t *data) {
+	drmModePlaneResPtr planes = drmModeGetPlaneResources(drmfd);
+	if (!planes) {
+		ERR("Cannot get drm planes: %s (%d)", strerror(errno), errno);
+		return;
+	}
+
+	MSG("DRM planes %d:", planes->count_planes);
+	for (uint32_t i = 0; i < planes->count_planes; ++i) {
+		drmModePlanePtr plane = drmModeGetPlane(drmfd, planes->planes[i]);
+		if (!plane) {
+			ERR("Cannot get drmModePlanePtr for plane %#x: %s (%d)",
+					planes->planes[i], strerror(errno), errno);
+			MSG("E Cannot get drmModePlanePtr for plane %#x: %s (%d)",
+					planes->planes[i], strerror(errno), errno);
+			continue;
+		}
+
+		MSG("\t%d: fb_id=%#x", i, plane->fb_id);
+
+		if (plane->fb_id) {
+			drmModeFB2Ptr drmfb = drmModeGetFB2(drmfd, plane->fb_id);
+			if (!drmfb) {
+				ERR("Cannot get drmModeFB2Ptr for fb %#x: %s (%d)",
+						plane->fb_id, strerror(errno), errno);
+				MSG("E Cannot get drmModeFB2Ptr for fb %#x: %s (%d)",
+						plane->fb_id, strerror(errno), errno);
+			} else {
+				responseAppendFramebuffer(data, drmfb, drmfd);
+				drmModeFreeFB2(drmfb);
+			}
+		}
+
+		drmModeFreePlane(plane);
+	}
+
+	drmModeFreePlaneResources(planes);
+}
+
 int main(int argc, const char *argv[])
 {
 	if (argc < 3) {
@@ -31,6 +188,7 @@ int main(int argc, const char *argv[])
 		return 1;
 	}
 
+	program_name = argv[0];
 	const char *card = argv[1];
 	const char *sockname = argv[2];
 
@@ -45,147 +203,11 @@ int main(int argc, const char *argv[])
 		perror("Cannot tell drm to expose all planes; the rest will very likely fail");
 	}
 
-	int sockfd = -1;
-	int retval = 2;
-	drmsend_response_t response = {0};
-	int fb_fds[OBS_DRMSEND_MAX_FRAMEBUFFERS] = {-1};
+	response_data_t data = {0};
 
-	{
-		drmModePlaneResPtr planes = drmModeGetPlaneResources(drmfd);
-		if (!planes) {
-			ERR("Cannot get drm planes: %s (%d)", strerror(errno),
-			    errno);
-			goto cleanup;
-		}
+	readDrmData(drmfd, &data);
+	responseSend(sockname, &data);
 
-		MSG("DRM planes %d:", planes->count_planes);
-		for (uint32_t i = 0; i < planes->count_planes; ++i) {
-			drmModePlanePtr plane =
-				drmModeGetPlane(drmfd, planes->planes[i]);
-			if (!plane) {
-				ERR("Cannot get drmModePlanePtr for plane %#x: %s (%d)",
-				    planes->planes[i], strerror(errno), errno);
-				continue;
-			}
-
-			MSG("\t%d: fb_id=%#x", i, plane->fb_id);
-
-			if (!plane->fb_id)
-				goto plane_continue;
-
-			int j = 0;
-			for (; j < response.num_framebuffers; ++j) {
-				if (response.framebuffers[j].fb_id ==
-				    plane->fb_id)
-					break;
-			}
-
-			if (j < response.num_framebuffers)
-				goto plane_continue;
-
-			if (j == OBS_DRMSEND_MAX_FRAMEBUFFERS) {
-				ERR("Too many framebuffers, max %d",
-				    OBS_DRMSEND_MAX_FRAMEBUFFERS);
-				goto plane_continue;
-			}
-
-			drmModeFBPtr drmfb = drmModeGetFB(drmfd, plane->fb_id);
-			if (!drmfb) {
-				ERR("Cannot get drmModeFBPtr for fb %#x: %s (%d)",
-				    plane->fb_id, strerror(errno), errno);
-			} else {
-				if (!drmfb->handle) {
-					ERR("\t\tFB handle for fb %#x is NULL",
-					    plane->fb_id);
-					ERR("\t\tPossible reason: not permitted to get FB handles. Do `sudo setcap cap_sys_admin+ep %s`",
-					    argv[0]);
-				} else {
-					int fb_fd = -1;
-					const int ret = drmPrimeHandleToFD(
-						drmfd, drmfb->handle, 0,
-						&fb_fd);
-					if (ret != 0 || fb_fd == -1) {
-						ERR("Cannot get fd for fb %#x handle %#x: %s (%d)",
-						    plane->fb_id, drmfb->handle,
-						    strerror(errno), errno);
-					} else {
-						const int fb_index =
-							response.num_framebuffers++;
-						drmsend_framebuffer_t *fb =
-							response.framebuffers +
-							fb_index;
-						fb_fds[fb_index] = fb_fd;
-						fb->fb_id = plane->fb_id;
-						fb->width = drmfb->width;
-						fb->height = drmfb->height;
-						fb->pitch = drmfb->pitch;
-						fb->offset = 0;
-						fb->fourcc =
-							DRM_FORMAT_XRGB8888; // FIXME
-					}
-				}
-				drmModeFreeFB(drmfb);
-			}
-
-		plane_continue:
-			drmModeFreePlane(plane);
-		}
-
-		drmModeFreePlaneResources(planes);
-	}
-
-	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
-	{
-		struct sockaddr_un addr;
-		addr.sun_family = AF_UNIX;
-		if (strlen(sockname) >= sizeof(addr.sun_path)) {
-			MSG("Socket filename '%s' is too long, max %d",
-			    sockname, (int)sizeof(addr.sun_path));
-			goto cleanup;
-		}
-
-		strcpy(addr.sun_path, sockname);
-		if (-1 == connect(sockfd, (const struct sockaddr *)&addr,
-				  sizeof(addr))) {
-			MSG("Cannot connect to unix socket: %d", errno);
-			goto cleanup;
-		}
-	}
-
-	response.tag = OBS_DRMSEND_TAG;
-
-	struct msghdr msg = {0};
-
-	struct iovec io = {
-		.iov_base = &response,
-		.iov_len = sizeof(response),
-	};
-	msg.msg_iov = &io;
-	msg.msg_iovlen = 1;
-
-	const int fb_size = sizeof(int) * response.num_framebuffers;
-	char cmsg_buf[CMSG_SPACE(sizeof(fb_fds))];
-	msg.msg_control = cmsg_buf;
-	msg.msg_controllen = CMSG_SPACE(fb_size);
-	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-	cmsg->cmsg_level = SOL_SOCKET;
-	cmsg->cmsg_type = SCM_RIGHTS;
-	cmsg->cmsg_len = CMSG_LEN(fb_size);
-	memcpy(CMSG_DATA(cmsg), fb_fds, fb_size);
-
-	const ssize_t sent = sendmsg(sockfd, &msg, 0);
-
-	if (sent < 0) {
-		perror("cannot sendmsg");
-		goto cleanup;
-	}
-
-	MSG("sent %d bytes", (int)sent);
-	retval = 0;
-
-cleanup:
-	if (sockfd >= 0)
-		close(sockfd);
 	close(drmfd);
-	return retval;
+	return 0;
 }

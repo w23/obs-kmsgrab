@@ -53,6 +53,7 @@ configure_file(
 
 set(PLUGIN_SOURCES
 	src/dmabuf.c
+	src/drm-helpers.c
 	src/xcursor-xcb.c)
 
 set(PLUGIN_HEADERS
