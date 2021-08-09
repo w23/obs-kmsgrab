@@ -108,14 +108,26 @@ int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, 
 	fb->planes = 0;
 	int fb_fds[4] = {-1, -1, -1, -1};
 	for (int i = 0; i < 4 && drmfb->handles[i]; ++i) {
-		const int ret = drmPrimeHandleToFD(drmfd, drmfb->handles[i], 0, fb_fds + i);
+		// Check whether this handle has been already acquired
+		int j;
+		for (j = 0; j < i; ++j) {
+			if (drmfb->handles[i] == drmfb->handles[j]) {
+				fb_fds[i] = fb_fds[j];
+				break;
+			}
+		}
+
+		// Not found, need to acquire fd for handle
+		if (j == i) {
+			const int ret = drmPrimeHandleToFD(drmfd, drmfb->handles[i], 0, fb_fds + i);
+			if (ret != 0 || fb_fds[i] == -1) {
+				ERR("Cannot get fd for fb %#x handle %#x: %s (%d)", drmfb->fb_id, drmfb->handles[i], strerror(errno), errno);
+				// TODO close already open handle fds
+				return -1;
+			}
+		}
 
 		MSG("\t\t\t%d: handle=%#x(%d) pitch=%u offset=%u", i, drmfb->handles[i], fb_fds[i], drmfb->pitches[i], drmfb->offsets[i]);
-
-		if (ret != 0 || fb_fds[i] == -1) {
-			ERR("Cannot get fd for fb %#x handle %#x: %s (%d)", drmfb->fb_id, drmfb->handles[i], strerror(errno), errno);
-			return -1;
-		}
 
 		fb->offsets[i] = drmfb->offsets[i];
 		fb->pitches[i] = drmfb->pitches[i];
@@ -133,10 +145,21 @@ int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, 
 	fb->height = drmfb->height;
 	fb->fourcc = drmfb->pixel_format;
 	fb->modifiers = drmfb->modifier;
-	fb->fds_offset = data->response.num_fds;
 
-	memcpy(data->fb_fds + data->response.num_fds, fb_fds, fb->planes * sizeof(int));
-	data->response.num_fds += fb->planes;
+	// Copy only unique fds
+	int unique_fds = 0;
+	for (int i = 0; i < fb->planes; ++i) {
+		int j;
+		for (j = 0; j < i && fb_fds[i] != fb_fds[j]; ++j);
+
+		fb->fd_indexes[i] = data->response.num_fds + j;
+
+		if (j == i) {
+			data->fb_fds[fb->fd_indexes[i]] = fb_fds[i];
+			++unique_fds;
+		}
+	}
+	data->response.num_fds += unique_fds;
 
 	++data->response.num_framebuffers;
 	return 0;
@@ -155,8 +178,6 @@ void readDrmData(int drmfd, response_data_t *data) {
 		if (!plane) {
 			ERR("Cannot get drmModePlanePtr for plane %#x: %s (%d)",
 					planes->planes[i], strerror(errno), errno);
-			MSG("E Cannot get drmModePlanePtr for plane %#x: %s (%d)",
-					planes->planes[i], strerror(errno), errno);
 			continue;
 		}
 
@@ -166,8 +187,6 @@ void readDrmData(int drmfd, response_data_t *data) {
 			drmModeFB2Ptr drmfb = drmModeGetFB2(drmfd, plane->fb_id);
 			if (!drmfb) {
 				ERR("Cannot get drmModeFB2Ptr for fb %#x: %s (%d)",
-						plane->fb_id, strerror(errno), errno);
-				MSG("E Cannot get drmModeFB2Ptr for fb %#x: %s (%d)",
 						plane->fb_id, strerror(errno), errno);
 			} else {
 				responseAppendFramebuffer(data, drmfb, drmfd);

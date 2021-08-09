@@ -246,6 +246,8 @@ static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_s
 			break;
 		}
 
+		// FIXME validate fb, e.g. assert(planes <= 4 && planes > 0)
+
 		memcpy(list->fb_fds, CMSG_DATA(cmsg),
 		       sizeof(int) * list->resp.num_fds);
 		retval = 1;
@@ -347,12 +349,18 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 	obs_enter_graphics();
 
 	const uint64_t modifiers[4] = {fb->modifiers, fb->modifiers, fb->modifiers, fb->modifiers};
+	const int fds[4] = {
+		ctx->fbs.fb_fds[fb->fd_indexes[0]],
+		ctx->fbs.fb_fds[fb->fd_indexes[1]],
+		ctx->fbs.fb_fds[fb->fd_indexes[2]],
+		ctx->fbs.fb_fds[fb->fd_indexes[3]]
+	};
 	ctx->texture = gs_texture_create_from_dmabuf(
 			fb->width, fb->height,
 			fb->fourcc,
 			drmFourccToGs(fb->fourcc),
 			fb->planes,
-			ctx->fbs.fb_fds + fb->fds_offset,
+			fds,
 			fb->pitches,
 			fb->offsets,
 			modifiers

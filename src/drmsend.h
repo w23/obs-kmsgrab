@@ -13,8 +13,8 @@ typedef struct {
 	uint32_t fourcc;
 	uint64_t modifiers;
 	int planes;
-	int fds_offset;
 
+	int fd_indexes[4];
 	uint32_t pitches[4];
 	uint32_t offsets[4];
 
