@@ -205,14 +205,15 @@ static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_s
 		msg.msg_iov = &io;
 		msg.msg_iovlen = 1;
 
-		char cmsg_buf[CMSG_SPACE(sizeof(int) *
-					 OBS_DRMSEND_MAX_FRAMEBUFFERS) * 4];
+		const int fbs_size = sizeof list->fb_fds;
+		char cmsg_buf[CMSG_SPACE(fbs_size)];
 		msg.msg_control = cmsg_buf;
-		msg.msg_controllen = sizeof(cmsg_buf);
+		msg.msg_controllen = sizeof cmsg_buf;
+
 		struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 		cmsg->cmsg_level = SOL_SOCKET;
 		cmsg->cmsg_type = SCM_RIGHTS;
-		cmsg->cmsg_len = sizeof(cmsg_buf);
+		cmsg->cmsg_len = CMSG_LEN(fbs_size);
 
 		// FIXME blocking, may hang if drmsend dies before sending anything
 		const ssize_t recvd = recvmsg(connfd, &msg, 0);
@@ -248,8 +249,10 @@ static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_s
 
 		// FIXME validate fb, e.g. assert(planes <= 4 && planes > 0)
 
-		memcpy(list->fb_fds, CMSG_DATA(cmsg),
-		       sizeof(int) * list->resp.num_fds);
+		memcpy(list->fb_fds, CMSG_DATA(cmsg), sizeof(int) * list->resp.num_fds);
+		for (int i = 0; i < list->resp.num_fds; ++i) {
+			blog(LOG_INFO, "\tfd%d: %d", i, list->fb_fds[i]);
+		}
 		retval = 1;
 		break;
 	}

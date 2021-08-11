@@ -19,7 +19,7 @@
 #define ERR(fmt, ...) fprintf(stderr, LOG_PREFIX fmt "\n", ##__VA_ARGS__)
 #define MSG(fmt, ...) fprintf(stdout, LOG_PREFIX fmt "\n", ##__VA_ARGS__)
 
-void printUsage(const char *name)
+static void printUsage(const char *name)
 {
 	MSG("usage: %s /dev/dri/card socket_filename", name);
 }
@@ -29,7 +29,7 @@ typedef struct {
 	int fb_fds[OBS_DRMSEND_MAX_FRAMEBUFFERS * 4];
 } response_data_t;
 
-int responseSend(const char *sockname, response_data_t *data) {
+static int responseSend(const char *sockname, response_data_t *data) {
 	int sockfd = -1;
 	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	{
@@ -61,9 +61,11 @@ int responseSend(const char *sockname, response_data_t *data) {
 	msg.msg_iovlen = 1;
 
 	const int fb_size = sizeof(int) * data->response.num_fds;
-	char cmsg_buf[CMSG_SPACE(sizeof(data->fb_fds))];
+	char cmsg_buf[CMSG_SPACE(fb_size)];
+
 	msg.msg_control = cmsg_buf;
-	msg.msg_controllen = CMSG_SPACE(fb_size);
+	msg.msg_controllen = sizeof cmsg_buf;
+
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 	cmsg->cmsg_level = SOL_SOCKET;
 	cmsg->cmsg_type = SCM_RIGHTS;
@@ -119,7 +121,7 @@ int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, 
 
 		// Not found, need to acquire fd for handle
 		if (j == i) {
-			const int ret = drmPrimeHandleToFD(drmfd, drmfb->handles[i], 0, fb_fds + i);
+			const int ret = drmPrimeHandleToFD(drmfd, drmfb->handles[i], O_RDONLY, fb_fds + i);
 			if (ret != 0 || fb_fds[i] == -1) {
 				ERR("Cannot get fd for fb %#x handle %#x: %s (%d)", drmfb->fb_id, drmfb->handles[i], strerror(errno), errno);
 				// TODO close already open handle fds
@@ -165,7 +167,7 @@ int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, 
 	return 0;
 }
 
-void readDrmData(int drmfd, response_data_t *data) {
+static void readDrmData(int drmfd, response_data_t *data) {
 	drmModePlaneResPtr planes = drmModeGetPlaneResources(drmfd);
 	if (!planes) {
 		ERR("Cannot get drm planes: %s (%d)", strerror(errno), errno);
