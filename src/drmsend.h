@@ -11,12 +11,12 @@ typedef struct {
 	uint32_t fb_id;
 	int width, height;
 	uint32_t fourcc;
-	uint64_t modifiers;
 	int planes;
 
 	int fd_indexes[4];
 	uint32_t pitches[4];
 	uint32_t offsets[4];
+	uint64_t modifiers[4];
 
 	/* fds are delivered OOB using control msg */
 } drmsend_framebuffer_t;

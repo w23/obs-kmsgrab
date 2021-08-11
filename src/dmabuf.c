@@ -265,9 +265,11 @@ static int dmabuf_source_receive_framebuffers(const char *dri_filename, dmabuf_s
 			const drmsend_framebuffer_t *fb =
 				list->resp.framebuffers + i;
 			blog(LOG_INFO,
-			     "Received width=%d height=%d planes=%u fourcc=%s(%#x) fd=%d",
-			     fb->width, fb->height, fb->planes, getDrmFourccName(fb->fourcc), fb->fourcc,
-			     list->fb_fds[i]);
+			     "Received width=%d height=%d planes=%u fourcc=%s(%#x)",
+			     fb->width, fb->height, fb->planes, getDrmFourccName(fb->fourcc), fb->fourcc);
+			for (int j = 0; j < fb->planes; ++j) {
+				blog(LOG_INFO, "\tobj%d: fd=%d pitch=%u offset=%u modifiers=%#lx", j, list->fb_fds[fb->fd_indexes[j]], fb->pitches[j], fb->offsets[j], fb->modifiers[j]);
+			}
 		}
 	}
 
@@ -351,7 +353,6 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 	// FIXME why is this needed?
 	obs_enter_graphics();
 
-	const uint64_t modifiers[4] = {fb->modifiers, fb->modifiers, fb->modifiers, fb->modifiers};
 	const int fds[4] = {
 		ctx->fbs.fb_fds[fb->fd_indexes[0]],
 		ctx->fbs.fb_fds[fb->fd_indexes[1]],
@@ -366,7 +367,7 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 			fds,
 			fb->pitches,
 			fb->offsets,
-			modifiers
+			fb->modifiers
 	);
 
 	obs_leave_graphics();

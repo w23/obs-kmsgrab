@@ -4,6 +4,7 @@
 #include <libdrm/drm_fourcc.h>
 #include <xf86drmMode.h>
 
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -86,9 +87,23 @@ cleanup:
 	return 1;
 }
 
+static int myDrmIoctl(int fd, unsigned long request, void *arg) {
+	int ret;
+	do {
+		ret = ioctl(fd, request, arg);
+	} while (ret == -1 && (errno == EINTR || errno == EAGAIN));
+	return ret;
+}
+
+static int myDrmGetModeFb2(int drmfd, int fb_id, struct drm_mode_fb_cmd2 *fb2) {
+	fb2->fb_id = fb_id;
+	const int err = myDrmIoctl(drmfd, DRM_IOCTL_MODE_GETFB2, fb2);
+	return err == 0 ? 0 : errno;
+}
+
 const char *program_name;
 
-int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, int drmfd) {
+static int responseAppendFramebuffer(response_data_t *data, const struct drm_mode_fb_cmd2* drmfb, int drmfd) {
 	// Skip duplicates
 	for (int i = 0; i < data->response.num_framebuffers; ++i) {
 		if (data->response.framebuffers[i].fb_id == drmfb->fb_id) {
@@ -97,8 +112,8 @@ int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, 
 		}
 	}
 
-	MSG("\t\tfb%d: %#x %ux%u fourcc=%#x modifier=%#lx flags=%#x",
-			data->response.num_framebuffers, drmfb->fb_id, drmfb->width, drmfb->height, drmfb->pixel_format, drmfb->modifier, drmfb->flags);
+	MSG("\t\tfb%d: %#x %ux%u fourcc=%#x flags=%#x",
+			data->response.num_framebuffers, drmfb->fb_id, drmfb->width, drmfb->height, drmfb->pixel_format, drmfb->flags);
 
 	if (data->response.num_framebuffers == OBS_DRMSEND_MAX_FRAMEBUFFERS) {
 		ERR("Too many framebuffers, max %d", OBS_DRMSEND_MAX_FRAMEBUFFERS);
@@ -129,10 +144,11 @@ int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, 
 			}
 		}
 
-		MSG("\t\t\t%d: handle=%#x(%d) pitch=%u offset=%u", i, drmfb->handles[i], fb_fds[i], drmfb->pitches[i], drmfb->offsets[i]);
+		MSG("\t\t\t%d: handle=%#x(%d) pitch=%u offset=%u modifier=%#llx", i, drmfb->handles[i], fb_fds[i], drmfb->pitches[i], drmfb->offsets[i], drmfb->modifier[i]);
 
 		fb->offsets[i] = drmfb->offsets[i];
 		fb->pitches[i] = drmfb->pitches[i];
+		fb->modifiers[i] = drmfb->modifier[i];
 
 		++fb->planes;
 	}
@@ -146,7 +162,6 @@ int responseAppendFramebuffer(response_data_t *data, const drmModeFB2Ptr drmfb, 
 	fb->width = drmfb->width;
 	fb->height = drmfb->height;
 	fb->fourcc = drmfb->pixel_format;
-	fb->modifiers = drmfb->modifier;
 
 	// Copy only unique fds
 	int unique_fds = 0;
@@ -186,13 +201,13 @@ static void readDrmData(int drmfd, response_data_t *data) {
 		MSG("\t%d: fb_id=%#x", i, plane->fb_id);
 
 		if (plane->fb_id) {
-			drmModeFB2Ptr drmfb = drmModeGetFB2(drmfd, plane->fb_id);
-			if (!drmfb) {
+			struct drm_mode_fb_cmd2 fb2;
+			const int err = myDrmGetModeFb2(drmfd, plane->fb_id, &fb2);
+			if (err != 0) {
 				ERR("Cannot get drmModeFB2Ptr for fb %#x: %s (%d)",
-						plane->fb_id, strerror(errno), errno);
+						plane->fb_id, strerror(err), err);
 			} else {
-				responseAppendFramebuffer(data, drmfb, drmfd);
-				drmModeFreeFB2(drmfb);
+				responseAppendFramebuffer(data, &fb2, drmfd);
 			}
 		}
 
