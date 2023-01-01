@@ -22,7 +22,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(LibObs REQUIRED)
+find_package(libobs REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Widgets)
 
 # LOL TODO for this we need cmake >= 3.19 w/ cmake policy CMP0109 set to NEW
@@ -53,6 +53,7 @@ configure_file(
 
 set(PLUGIN_SOURCES
 	src/dmabuf.c
+	src/drm-helpers.c
 	src/xcursor-xcb.c)
 
 set(PLUGIN_HEADERS
@@ -75,7 +76,7 @@ include_directories(
 )
 
 target_link_libraries(${CMAKE_PROJECT_NAME}
-	libobs
+	obs
 	xcb
 	xcb-xfixes
 	Qt5::Core

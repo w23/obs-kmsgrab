@@ -18,7 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdint.h>
 #include <xcb/xfixes.h>
 
-#include <util/bmem.h>
+#include <obs/util/bmem.h>
 #include "xcursor-xcb.h"
 
 /*

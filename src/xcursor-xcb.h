@@ -17,7 +17,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
-#include <obs.h>
+#include <obs/obs.h>
 #include <xcb/xfixes.h>
 
 #ifdef __cplusplus
