@@ -3,12 +3,14 @@
 
 #include "drm-helpers.h"
 
-#include <graphics/graphics.h>
-#include <graphics/graphics-internal.h>
+#include <obs/obsconfig.h>
 
-#include <obs-module.h>
-#include <obs-nix-platform.h>
-#include <util/platform.h>
+#include <obs/graphics/graphics.h>
+#include <obs/graphics/graphics-internal.h>
+
+#include <obs/obs-module.h>
+#include <obs/obs-nix-platform.h>
+#include <obs/util/platform.h>
 
 #include <sys/wait.h>
 #include <stdio.h>
